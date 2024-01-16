@@ -1,7 +1,9 @@
 local CM = LibStub("AceAddon-3.0"):NewAddon("CM", "AceConsole-3.0", "AceEvent-3.0", "AceTimer-3.0")
 
--- /console taintLog 1
--- /console taintLog 0
+local math = math
+local string = string
+local table = table
+
 -- /console scriptErrors 1
 -- /console scriptErrors 0
 
@@ -22,7 +24,6 @@ function CM:OnInitialize()
     self.database = LibStub("AceDB-3.0"):New("CMDB", {}, true)
 
     CM:RegisterChatCommand("cm", "NextModule")
-    CM:RegisterChatCommand("mc", "PreviousModule")
 end
 
 function CM:OnEnable()
@@ -227,17 +228,20 @@ function CM:OnEnable()
     ----------------------------------------------------------------------------
 
     self.modules = {}
-    self.resets = {}
+
+    self.prototype = {
+        Parse = function() end,
+        Update = function() end,
+        Reset = function() end
+    }
 
     Damage:Enable()
     DamageBreakdown:Enable()
     Healing:Enable()
     HealingBreakdown:Enable()
 
-    CM:OnUpdate({"ENABLE"}, function()
-    end)
-
-    self:SetModule(self:GetModule())
+    self:RegisterModule(self.prototype, {})
+    self:SetModule(self:GetModuleIndex())
 
     ----------------------------------------------------------------------------
     -- Initialization
@@ -247,12 +251,114 @@ function CM:OnEnable()
         CM:Parse(CombatLogGetCurrentEventInfo())
     end)
 
+    CM:RegisterEvent("PLAYER_ENTERING_WORLD", function()
+        self:Show()
+    end)
+    CM:RegisterEvent("CINEMATIC_STOP", function()
+        self:Show()
+    end)
+
     CM:RegisterEvent("PLAYER_REGEN_DISABLED", function()
         CM:Start()
     end)
     CM:RegisterEvent("PLAYER_REGEN_ENABLED", function()
         CM:Stop()
     end)
+
+    CM:RegisterEvent("ENCOUNTER_START", function()
+        CM:Start()
+    end)
+    CM:RegisterEvent("ENCOUNTER_END", function()
+        CM:Stop()
+    end)
+end
+
+function CM:RegisterModule(module, events)
+    table.insert(self.modules, {
+        ["class"] = module,
+        ["events"] = events
+    })
+end
+
+function CM:GetModule()
+    local module = self.database.profile["module"] or 1
+
+    if self.modules[module] then
+        return self.modules[module]
+    end
+
+end
+
+function CM:GetModuleIndex()
+    local module = self.database.profile["module"] or 1
+
+    if self.modules[module] then
+        return module
+    end
+
+end
+
+function CM:GetModules()
+    return self.modules or {}
+end
+
+function CM:SetModule(module)
+
+    if self.modules[module] then
+        self.database.profile["module"] = module
+        self:Show()
+    end
+
+end
+
+function CM:NextModule()
+    local module = self:GetModuleIndex()
+    local modules = #self.modules
+
+    if modules > 0 then
+
+        if module < modules then
+            self:SetModule(module + 1)
+        elseif module == modules then
+            self:SetModule(1)
+        end
+
+    end
+
+end
+
+function CM:Listening(event)
+    local listening = false
+
+    for index, module in ipairs(self:GetModules()) do
+
+        if tContains(module.events, event) then
+            listening = true
+        end
+
+    end
+
+    return listening
+end
+
+function CM:Dispatch(event)
+
+    for index, module in ipairs(self:GetModules()) do
+
+        if tContains(module.events, event.token) then
+            module.class:Parse(event)
+        end
+
+    end
+
+end
+
+function CM:Reset()
+
+    for index, module in ipairs(self:GetModules()) do
+        module.class:Reset()
+    end
+
 end
 
 --------------------------------------------------------------------------------
@@ -324,34 +430,83 @@ function CM:Round(number, precision)
     return math.floor(number / precision) * precision
 end
 
---------------------------------------------------------------------------------
--- Events
---------------------------------------------------------------------------------
+function CM:GetOwner(GUID)
 
-function CM:OnEvent(event, callback)
-    self.events[event] = self.events[event] or {}
+    if GUID == UnitGUID("pet") then
+        local ownerGUID = UnitGUID("player")
+        local ownerName = UnitName("player")
+        local ownerFlags = 0x00000511
 
-    table.insert(self.events[event], callback)
-end
+        return ownerGUID, ownerName, ownerFlags
+    end
 
-function CM:OnEvents(events, callback)
+    if IsInRaid() then
 
-    for _, event in ipairs(events) do
-        self:OnEvent(event, callback)
+        for i = 1, GetNumGroupMembers() do
+
+            if GUID == UnitGUID("raidpet" .. i) then
+                local ownerGUID = UnitGUID("raid" .. i)
+                local ownerName = UnitName("raid" .. i)
+                local ownerFlags = 0x00000417
+            end
+
+        end
+
+    elseif IsInGroup() then
+
+        for i = 1, GetNumGroupMembers() - 1 do
+
+            if GUID == UnitGUID("partypet" .. i) then
+                local ownerGUID = UnitGUID("party" .. i)
+                local ownerName = UnitName("party" .. i)
+                local ownerFlags = 0x00000417
+            end
+
+        end
+
     end
 
 end
 
-function CM:HasEvent(event)
-    return self.events[event]
+--------------------------------------------------------------------------------
+-- Frame
+--------------------------------------------------------------------------------
+
+function CM:Setup()
+    self.Frame = CreateFrame("GameTooltip", "CMContainer", UIParent, "SharedTooltipTemplate")
+    self.Frame:SetOwner(UIParent, "ANCHOR_NONE")
+    self.Frame:SetFrameStrata("LOW")
 end
 
-function CM:Dispatch(event)
+function CM:Update()
 
-    for _, callback in ipairs(event.callbacks) do
-        callback(event)
+    if self:IsRunning() then
+        self:Show()
     end
 
+end
+
+function CM:Show()
+    self.Frame:SetOwner(UIParent, "ANCHOR_NONE")
+    self.Frame:ClearLines()
+
+    self:GetModule().class:Update()
+
+    self.Frame:Show()
+    self.Frame:SetPoint("BOTTOMRIGHT", UIParent, "BOTTOMRIGHT", -10, 10)
+end
+
+function CM:Header(header, additional)
+    self.Frame:ClearLines()
+    self.Frame:AddDoubleLine(header, additional)
+end
+
+function CM:Line(content, red, green, blue)
+    self.Frame:AddLine(content, red or 1, green or 1, blue or 1)
+end
+
+function CM:DoubleLine(content, additional, red, green, blue, additionalRed, additionalGreen, additionalBlue)
+    self.Frame:AddDoubleLine(content, additional, red or 1, green or 1, blue or 1, additionalRed or 1, additionalGreen or 1, additionalBlue or 1)
 end
 
 --------------------------------------------------------------------------------
@@ -360,9 +515,8 @@ end
 
 function CM:Parse(timestamp, token, ...)
 
-    if CM:HasEvent(token) then
+    if self:Listening(token) and self:IsRunning() then
         local event = {}
-        event.callbacks = self.events[token]
         event.timestamp = timestamp
         event.token = self.ALIASES[token] or token
 
@@ -422,104 +576,92 @@ function CM:Parse(timestamp, token, ...)
         end
 
         if not event.sourceName then
-            CM:Print("Source GUID: " .. event.sourceGUID)
-            CM:Print("Destination: " .. event.destinationName)
             return
         end
 
         self:Dispatch(event)
-
-        if self:HasUpdate(self:GetModule(), event.token) then
-            self:Update(event.token, self:GetUpdate(self:GetModule(), event.token))
-        end
-
     end
 
 end
 
-function CM:GetOwner(GUID)
-
-    if GUID == UnitGUID("pet") then
-        local ownerGUID = UnitGUID("player")
-        local ownerName = UnitName("player")
-        local ownerFlags = 0x00000511
-
-        return ownerGUID, ownerName, ownerFlags
-    end
-
-    if IsInRaid() then
-
-        for i = 1, GetNumGroupMembers() do
-
-            if GUID == UnitGUID("raidpet" .. i) then
-                local ownerGUID = UnitGUID("raid" .. i)
-                local ownerName = UnitName("raid" .. i)
-                local ownerFlags = 0x00000417
-            end
-
-        end
-
-    elseif IsInGroup() then
-
-        for i = 1, GetNumGroupMembers() - 1 do
-
-            if GUID == UnitGUID("partypet" .. i) then
-                local ownerGUID = UnitGUID("party" .. i)
-                local ownerName = UnitName("party" .. i)
-                local ownerFlags = 0x00000417
-            end
-
-        end
-
-    end
-
-end
+--------------------------------------------------------------------------------
+-- Controller
+--------------------------------------------------------------------------------
 
 function CM:Start()
 
     if not self.started then
-        self.started = time()
+        self:Reset()
+
+        self.updateTimer = self:ScheduleRepeatingTimer(function()
+            CM:Update()
+        end, 1)
+
+        self.started = true
+        self.startedTime = time()
     end
 
+end
+
+function CM:IsRunning()
+    return self.started
 end
 
 function CM:Stop()
 
+    if self.stopTimer then
+        self:CancelTimer(self.stopTimer)
+        self.stopTimer = nil
+    end
+
+    self.stopTimer = self:ScheduleTimer("Break", 1.5)
+end
+
+function CM:Break()
+
     if not self:InCombat() then
 
-        if self.timer then
-            self:CancelTimer(self.timer)
-            self.timer = nil
+        if self.updateTimer then
+            self:CancelTimer(self.updateTimer)
+            self.updateTimer = nil
         end
 
-        self.started = nil
-        self:Reset()
+        self.started = false
+        self.stoppedTime = time()
     else
-        self.timer = self:ScheduleTimer("Stop", 1)
+        CM:Stop()
     end
 
 end
 
-function CM:OnReset(callback)
-    self.resets = self.resets or {}
+function CM:TimeStarted()
 
-    table.insert(self.resets, callback)
-end
-
-function CM:Reset()
-
-    for _, callback in ipairs(self.resets) do
-        callback()
+    if self.startedTime then
+        return self.startedTime
+    else
+        return time()
     end
 
 end
 
-function CM:Started()
-    return self.started
+function CM:TimeRunning()
+
+    if self:IsRunning() then
+        return time()
+    elseif self.stoppedTime then
+        return self.stoppedTime
+    else
+        return time()
+    end
+
+end
+
+function CM:TimeEllapsed()
+    return math.max(self:TimeRunning() - CM:TimeStarted(), 1)
 end
 
 function CM:InCombat()
-    local state = InCombatLockdown()
+    local state = InCombatLockdown() or UnitAffectingCombat("player")
 
     if IsInRaid() then
 
@@ -539,140 +681,13 @@ function CM:InCombat()
 end
 
 --------------------------------------------------------------------------------
--- Frame
---------------------------------------------------------------------------------
-
-function CM:Setup()
-    self.Frame = CreateFrame("GameTooltip", "CMContainer", UIParent, "SharedTooltipTemplate")
-    self.Frame:SetOwner(UIParent, "ANCHOR_NONE")
-    self.Frame:SetFrameStrata("LOW")
-end
-
-function CM:Header(header, additional)
-    self.Frame:ClearLines()
-    self.Frame:AddDoubleLine(header, additional)
-end
-
-function CM:Line(content, red, green, blue)
-    self.Frame:AddLine(content, red or 1, green or 1, blue or 1)
-end
-
-function CM:DoubleLine(content, additional, red, green, blue, additionalRed, additionalGreen, additionalBlue)
-    self.Frame:AddDoubleLine(content, additional, red or 1, green or 1, blue or 1, additionalRed or 1, additionalGreen or 1, additionalBlue or 1)
-end
-
-function CM:Update(event, callback)
-
-    if event ~= "ENABLE" and not self:Started() then
-        return
-    end
-
-    self.Frame:SetOwner(UIParent, "ANCHOR_NONE")
-    self.Frame:ClearLines()
-
-    if callback then
-        callback()
-    end
-
-    self.Frame:Show()
-    self.Frame:SetPoint("BOTTOMRIGHT", UIParent, "BOTTOMRIGHT", -10, 10)
-end
-
-function CM:OnUpdate(events, callback)
-    local module = {}
-
-    for _, event in ipairs(events) do
-        module[event] = callback
-    end
-
-    module["ENABLE"] = callback
-
-    table.insert(self.modules, module)
-end
-
-function CM:HasUpdate(module, event)
-
-    if self.modules[module] and self.modules[module][event] then
-        return true
-    else
-        return false
-    end
-
-end
-
-function CM:GetUpdate(module, event)
-
-    if self:HasUpdate(module, event) then
-        return self.modules[module][event]
-    end
-
-end
-
---------------------------------------------------------------------------------
--- Module
---------------------------------------------------------------------------------
-
-function CM:SetModule(module)
-
-    if self.modules[module] then
-        self.database.profile["module"] = module
-        self:Update("ENABLE", self:GetUpdate(module, "ENABLE"))
-    end
-
-end
-
-function CM:GetModule()
-    return self.database.profile["module"] or 1
-end
-
-function CM:FirstModule()
-    self:SetModule(1)
-end
-
-function CM:LastModule()
-    self:SetModule(#self.modules)
-end
-
-function CM:NextModule()
-    local module = self:GetModule()
-    local modules = #self.modules
-
-    if modules > 0 then
-
-        if module < modules then
-            self:SetModule(module + 1)
-        elseif module == modules then
-            self:FirstModule()
-        end
-
-    end
-
-end
-
-function CM:PreviousModule()
-    local module = self:GetModule()
-    local modules = #self.modules
-
-    if modules > 0 then
-
-        if module == 1 then
-            self:LastModule()
-        else
-            self:SetModule(module - 1)
-        end
-
-    end
-
-end
-
---------------------------------------------------------------------------------
--- Damage
+-- Damage Module
 --------------------------------------------------------------------------------
 
 function Damage:Enable()
     self:Reset()
 
-    self.events = {
+    CM:RegisterModule(self, {
         "DAMAGE_SHIELD",
         "DAMAGE_SPLIT",
         "RANGE_DAMAGE",
@@ -686,17 +701,7 @@ function Damage:Enable()
         "SPELL_MISSED",
         "SPELL_PERIODIC_MISSED",
         "SWING_MISSED"
-    }
-
-    CM:OnEvents(self.events, function(event)
-        self:Parse(event)
-    end)
-    CM:OnUpdate(self.events, function()
-        self:Update()
-    end)
-    CM:OnReset(function()
-        self:Reset()
-    end)
+    })
 end
 
 function Damage:Parse(event)
@@ -710,12 +715,6 @@ function Damage:Parse(event)
     end
 
     if event.IsMine(event.sourceFlags) or event.InGroup(event.sourceFlags) then
-
-        if not event.amount then
-            CM:Print(event.token)
-            return
-        end
-
         self.data = self.data or {}
         self.data[event.sourceName] = self.data[event.sourceName] or {}
         self.data[event.sourceName].damage = self.data[event.sourceName].damage or 0
@@ -742,8 +741,7 @@ function Damage:Update()
     CM:Header("Damage")
 
     if self.data then
-        local elapsed = math.max(time() - (CM:Started() or time()), 1)
-
+        local elapsed = CM:TimeEllapsed()
         local sorted = {}
 
         for source in pairs(self.data) do
@@ -754,7 +752,7 @@ function Damage:Update()
             return self.data[a].damage > self.data[b].damage
         end)
 
-        for i = 1, #sorted do
+        for i = 1, math.min(#sorted, 10) do
             local damage = self.data[sorted[i]].damage
             local color = self.data[sorted[i]].color
 
@@ -781,13 +779,13 @@ function Damage:Reset()
 end
 
 --------------------------------------------------------------------------------
--- DamageBreakdown
+-- Damage Breakdown Module
 --------------------------------------------------------------------------------
 
 function DamageBreakdown:Enable()
     self:Reset()
 
-    self.events = {
+    CM:RegisterModule(self, {
         "DAMAGE_SHIELD",
         "DAMAGE_SPLIT",
         "RANGE_DAMAGE",
@@ -801,17 +799,7 @@ function DamageBreakdown:Enable()
         "SPELL_MISSED",
         "SPELL_PERIODIC_MISSED",
         "SWING_MISSED"
-    }
-
-    CM:OnEvents(self.events, function(event)
-        self:Parse(event)
-    end)
-    CM:OnUpdate(self.events, function()
-        self:Update()
-    end)
-    CM:OnReset(function()
-        self:Reset()
-    end)
+    })
 end
 
 function DamageBreakdown:Parse(event)
@@ -866,7 +854,7 @@ function DamageBreakdown:Update()
                     return data.spells[a] > data.spells[b]
                 end)
 
-                for i = 1, #sorted do
+                for i = 1, math.min(#sorted, 10) do
                     local spell = sorted[i]
                     local damage = data.spells[spell]
 
@@ -895,26 +883,16 @@ function DamageBreakdown:Reset()
 end
 
 --------------------------------------------------------------------------------
--- Healing
+-- Healing Module
 --------------------------------------------------------------------------------
 
 function Healing:Enable()
     self:Reset()
 
-    self.events = {
+    CM:RegisterModule(self, {
         "SPELL_HEAL",
         "SPELL_PERIODIC_HEAL"
-    }
-
-    CM:OnEvents(self.events, function(event)
-        self:Parse(event)
-    end)
-    CM:OnUpdate(self.events, function()
-        self:Update()
-    end)
-    CM:OnReset(function()
-        self:Reset()
-    end)
+    })
 end
 
 function Healing:Parse(event)
@@ -950,7 +928,7 @@ function Healing:Update()
     CM:Header("Healing")
 
     if self.data then
-        local elapsed = math.max(time() - (CM:Started() or time()), 1)
+        local elapsed = CM:TimeEllapsed()
         local sorted = {}
 
         for source in pairs(self.data) do
@@ -961,7 +939,7 @@ function Healing:Update()
             return self.data[a].healing > self.data[b].healing
         end)
 
-        for i = 1, #sorted do
+        for i = 1, math.min(#sorted, 10) do
             local healing = self.data[sorted[i]].healing
             local color = self.data[sorted[i]].color
 
@@ -988,26 +966,16 @@ function Healing:Reset()
 end
 
 --------------------------------------------------------------------------------
--- DamageBreakdown
+-- Healing Breakdown Module
 --------------------------------------------------------------------------------
 
 function HealingBreakdown:Enable()
     self:Reset()
 
-    self.events = {
+    CM:RegisterModule(self, {
         "SPELL_HEAL",
         "SPELL_PERIODIC_HEAL"
-    }
-
-    CM:OnEvents(self.events, function(event)
-        self:Parse(event)
-    end)
-    CM:OnUpdate(self.events, function()
-        self:Update()
-    end)
-    CM:OnReset(function()
-        self:Reset()
-    end)
+    })
 end
 
 function HealingBreakdown:Parse(event)
@@ -1062,7 +1030,7 @@ function HealingBreakdown:Update()
                     return data.spells[a] > data.spells[b]
                 end)
 
-                for i = 1, #sorted do
+                for i = 1, math.min(#sorted, 10) do
                     local spell = sorted[i]
                     local healing = data.spells[spell]
 

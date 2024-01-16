@@ -1,4 +1,4 @@
-## Interface: 100200
+## Interface: 100205
 ## Title: CM
 ## Notes: Simple Damage and Healing Meter
 ## Version: 1.0.0
